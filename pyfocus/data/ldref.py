@@ -79,9 +79,13 @@ class LDRefPanel(object):
     CHRCOL = "chrom"
     SNPCOL = "snp"
     BPCOL = "pos"
-    A1COL = "a1"
-    A2COL = "a0"
-
+    # A1COL = "a1"
+    # A2COL = "a0"
+    # JCM Like SprediXcan we will set the first column as the "effect" column
+    # Otherwise, trying to replicate Wingo PWAS we flip the sign of zscore
+    A1COL = "a0"
+    A2COL = "a1"
+    # Bim file format:
     # chrom snp  cm pos a0 a1 i
 
     def __init__(self, snp_info, sample_info, geno):

@@ -303,10 +303,14 @@ def import_predixcan(path, name, tissue, assay, method, session):
     genes = weights.gene.unique()
     genes = [gencode2ensmble(g) for g in genes]
 
-    log.info("Querying mygene servers for gene annotations")
+    log.info("Querying mygene servers for gene annotations (JCM)")
     mg = mygene.MyGeneInfo()
-    results = mg.querymany(genes, scopes='ensembl.gene', verbose=False,
-                           fields="genomic_pos_hg19,symbol,alias", species="human")
+    log.info(genes[1:10])
+    # results = mg.querymany(genes, scopes='ensembl.gene', verbose=False,
+    #                        fields="genomic_pos_hg19,symbol,alias", species="human")
+    # Alvaro tweak
+    results = mg.querymany(genes, scopes='ensembl.gene', verbose=False, fields="genomic_pos,symbol,alias", species="human")
+    log.info("Got results.")
 
     res_map = defaultdict(list)
     for result in results:
@@ -333,13 +337,17 @@ def import_predixcan(path, name, tissue, assay, method, session):
             if "notfound" in hit:
                 continue
 
-            if hit["symbol"] != g_name and "alias" in hit and g_name not in hit["alias"]:
+            # if hit["symbol"] != g_name and "alias" in hit and g_name not in hit["alias"]:
+            # Alvaro tweaks
+            if "symbol" in hit and hit["symbol"] != g_name and "alias" in hit and g_name not in hit["alias"]:
                 continue
 
-            if "genomic_pos_hg19" not in hit:
+            # if "genomic_pos_hg19" not in hit:
+            if "genomic_pos" not in hit:
                 continue
 
-            gpos = hit["genomic_pos_hg19"]
+            # gpos = hit["genomic_pos_hg19"]
+            gpos = hit["genomic_pos"]
             if type(gpos) is dict:
                 gpos = [gpos]
 

@@ -128,6 +128,9 @@ def align_data(gwas, ref_geno, wcollection, ridge=0.1):
     idxs = []
     final_df = None
     for eid, model in wcollection.groupby(["ens_gene_id", "tissue", "inference", "ref_name"]):
+        # if eid[0] in ["10816_150", "6402_8"]:
+        #     import pdb
+        #     pdb.set_trace()
         log.debug("Aligning weights for gene {}".format(eid))
 
         # merge local model with the reference panel
@@ -138,6 +141,11 @@ def align_data(gwas, ref_geno, wcollection, ridge=0.1):
                                            m_merged["alt_allele"],
                                            m_merged[pf.LDRefPanel.A1COL],
                                            m_merged[pf.LDRefPanel.A2COL])
+        if eid[0] in [""]:
+            log.debug(f"JCM: Missing gene")
+            log.debug(m_merged)
+            log.debug(model)
+            # import pdb; pdb.set_trace()
 
         n_miss = sum(np.logical_not(m_matched))
         if n_miss > 0:
@@ -152,10 +160,21 @@ def align_data(gwas, ref_geno, wcollection, ridge=0.1):
                                              m_merged[pf.LDRefPanel.A1COL],
                                              m_merged[pf.LDRefPanel.A2COL])
 
+
+        # Sometimes this can be dtype object, which errors with np.isclose
+        m_merged["effect"] = m_merged["effect"].astype("float") 
         # skip genes whose overlapping weights are all 0s
-        if len(m_merged) > 1 and all(np.isclose(m_merged["effect"], 0)):
+        if len(m_merged) > 1 and all(np.isclose(m_merged["effect"], 0)): # OG had > 1 which can cause errors
             log.debug("Gene {} has only zero-weights. This will break variance estimate. Skipping.".format(eid))
             continue
+        if eid[0] == "intron_9_23705071_23731022":
+            log.debug(f"JCM: Missing gene")
+            log.debug(m_merged)
+            if eid[1] == "brain_substantia_nigra":
+                log.debug(f"JCM: weight for this is? {m_merged.effect}")
+                log.debug(np.isclose(m_merged["effect"], 0))
+                log.debug(len(m_merged))
+                log.debug(m_merged)
 
         # skip genes that do not have weights at referenced SNPs
         if all(pd.isnull(m_merged["effect"])):
@@ -190,7 +209,7 @@ def align_data(gwas, ref_geno, wcollection, ridge=0.1):
     gwas = ref_snps[pf.GWAS.REQ_COLS]
 
     # need to replace NA with 0 due to jaggedness across genes
-    wmat = ref_snps.filter(like="model").values
+    wmat = np.array(ref_snps.filter(like="model").values, dtype=np.float64)
     wmat[np.isnan(wmat)] = 0.0
 
     # Meta-data on the current model
@@ -204,6 +223,11 @@ def align_data(gwas, ref_geno, wcollection, ridge=0.1):
     ranks = np.argsort(meta_data["tx_start"].values)
     wmat = wmat.T[ranks].T
     meta_data = meta_data.iloc[ranks]
+    
+    # Alvaro Tweak
+    non_zero_rows = np.where(wmat.T.any(axis=1))[0]
+    wmat = wmat.T[non_zero_rows].T
+    meta_data = meta_data.iloc[non_zero_rows]
 
     return gwas, wmat, meta_data, ldmat
 
@@ -221,6 +245,11 @@ def estimate_cor(wmat, ldmat, intercept=False):
     wcov = mdot([wmat.T, ldmat, wmat])
     scale = np.diag(1 / np.sqrt(np.diag(wcov)))
     wcor = mdot([scale, wcov, scale])
+    if wcor.size == 0:
+        log = logging.getLogger(pf.LOG)
+        log.debug(f"JCM: wcor is empty | wmat.T: {wmat.T}")
+        log.debug(f"JCM: wcor is empty | ldmat: {ldmat}")
+        
 
     if intercept:
         inter = mdot([scale, wmat.T, ldmat])
@@ -229,7 +258,7 @@ def estimate_cor(wmat, ldmat, intercept=False):
         return wcor, None
 
 
-def assoc_test(weights, gwas, ldmat, heterogeneity=False):
+def assoc_test(weights, gwas, ldmat, heterogeneity=False, gene=None):
     """
     TWAS association test.
 
@@ -264,6 +293,7 @@ def get_resid(zscores, swld, wcor):
 
     :return: tuple (residual TWAS zscores, intercept z-score)
     """
+    log = logging.getLogger(pf.LOG)
     m, m = wcor.shape
     m, p = swld.shape
 
@@ -271,13 +301,21 @@ def get_resid(zscores, swld, wcor):
     intercept = swld.dot(np.ones(p))
 
     # estimate under the null for variance components, i.e. V = SW LD SW
-    wcor_inv, rank = lin.pinvh(wcor, return_rank=True)
+    try:
+        wcor_inv, rank = lin.pinvh(wcor, return_rank=True)
+    except:
+        log.debug(f"JCM: inverse failed, inspect wcor {wcor}")
+        log.debug(wcor)
+        log.debug(type(wcor))
+        if wcor.size == 0:
+            log.debug(f"JCM: wcor == [] True")
 
     numer = mdot([intercept.T, wcor_inv, zscores])
     denom = mdot([intercept.T, wcor_inv, intercept])
     alpha = numer / denom
     resid = zscores - intercept * alpha
 
+    # line below can get divide by zero error?
     s2 = mdot([resid, wcor_inv, resid]) / (rank - 1)
     inter_se = np.sqrt(s2 / denom)
     inter_z = alpha / inter_se
@@ -349,8 +387,14 @@ def fine_map(gwas, wcollection, ref_geno, intercept=False, heterogeneity=False, 
     :return: pandas.DataFrame containing the TWAS statistics and fine-mapping results if plot=False.
         (pandas.DataFrame, list of plot-objects) if plot=True
     """
+    # import pdb; pdb.set_trace()
     log = logging.getLogger(pf.LOG)
     log.info("Starting fine-mapping at region {}".format(ref_geno))
+
+    # log_str = "Starting fine-mapping at region {}".format(ref_geno)
+    # if log_str == "Starting fine-mapping at region 19:43863981 - 19:44743954":
+    #     import pdb
+    #     pdb.set_trace()
 
     # align all GWAS, LD reference, and overlapping molecular weights
     parameters = align_data(gwas, ref_geno, wcollection, ridge=ridge)
@@ -363,9 +407,24 @@ def fine_map(gwas, wcollection, ref_geno, intercept=False, heterogeneity=False, 
 
     zscores = []
     # run local TWAS
+    want_idx = []
+    want_gene = []
     for idx, weights in enumerate(wmat.T):
         log.debug("Computing TWAS association statistic for gene {}".format(meta_data.iloc[idx]["ens_gene_id"]))
-        beta, se = assoc_test(weights, gwas, ldmat, heterogeneity)
+        # GSTM4, ZBTB38, PIK3R3 (chr1,chr3, chr1)
+        # if meta_data.iloc[idx]["ens_gene_id"] in ["ENSG00000168765.16", "ENSG00000177311.11", "ENSG00000117461.14"]:
+        # if meta_data.iloc[idx]["mol_name"] in ["GSTM4", "ZBTB38", "PIK3R3"]:
+        # if meta_data.iloc[idx]["mol_name"] in ["10816_150", "6402_8"]:
+        #     want_idx.append(idx)
+        #     want_gene.append(meta_data.iloc[idx]["mol_name"])
+        #     import pdb
+        #     pdb.set_trace()
+        if meta_data.iloc[idx]["ens_gene_id"] in ["ENSG00000188610.12"]:
+            want_idx.append(idx)
+            want_gene.append(meta_data.iloc[idx]["mol_name"])
+            import pdb
+            pdb.set_trace()
+        beta, se = assoc_test(weights, gwas, ldmat, heterogeneity, meta_data.iloc[idx]["ens_gene_id"])
         zscores.append(beta / se)
 
     # perform fine-mapping
@@ -390,7 +449,6 @@ def fine_map(gwas, wcollection, ref_geno, intercept=False, heterogeneity=False, 
     marginal = null_res
     # enumerate all subsets
     for subset in chain.from_iterable(combinations(rm, n) for n in range(1, k + 1)):
-
         local = bayes_factor(zscores, subset, wcor, prior_chisq, prior_prob)
 
         # keep track for marginal likelihood

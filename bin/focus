@@ -305,15 +305,16 @@ def parse_dat(dat_gen, convert_colname, log, args):
             dat.drop(
                 [x for x in ['INFO', 'FRQ'] if x in dat.columns], inplace=True, axis=1)
 
-        ii &= filter_pvals(dat.P, log)
+        # ii &= filter_pvals(dat.P, log)
         new = ii.sum()
-        drops['P'] += old - new
+        # drops['P'] += old - new
         old = new
         dat.A1 = dat.A1.str.upper()
         dat.A2 = dat.A2.str.upper()
-        ii &= pyfocus.check_valid_snp(dat.A1, dat.A2)
+        # Alvaro tweaks
+        # ii &= pyfocus.check_valid_snp(dat.A1, dat.A2) 
         new = ii.sum()
-        drops['A'] += old - new
+        # drops['A'] += old - new
 
         if ii.sum() == 0:
             continue
@@ -434,6 +435,13 @@ def munge(args):
         'OR': 1,
         'Z': 0
     }
+
+    # # JCM: Try to prevent removing Z score column
+    # null_values = {
+    #     'LOG_ODDS': 0,
+    #     'BETA': 0,
+    #     'OR': 1,
+    # }
 
     default_cnames = {
         # Chromosome
@@ -628,9 +636,12 @@ def munge(args):
         new = len(dat)
         log.info('Removed {M} SNPs with duplicated rs numbers ({N} SNPs remain).'.format(M=old - new, N=new))
         # filtering on N cannot be done chunkwise
+
+        # JCM, not really necessary if we trust that our p-values were calculated correctly
         dat = process_n(dat, args, log)
-        dat.P = p_to_z(dat.P)
-        dat.rename(columns={'P': 'Z'}, inplace=True)
+        # dat.P = p_to_z(dat.P)
+        # dat.rename(columns={'P': 'Z'}, inplace=True)
+        dat.drop('P', inplace=True, axis=1)
         if not args.a1_inc:
             m = np.median(dat.SIGNED_SUMSTAT)
             if not pass_median_check(m, signed_sumstat_null, 0.1):
@@ -641,7 +652,9 @@ def munge(args):
                 msg = 'Median value of {F} was {C}, which seems sensible.'.format(C=m, F=sign_cname)
                 log.info(msg)
 
-            dat.Z *= (-1) ** (dat.SIGNED_SUMSTAT < signed_sumstat_null)
+            # JCM: Use original z score
+            # dat.Z *= (-1) ** (dat.SIGNED_SUMSTAT < signed_sumstat_null)
+            dat['Z'] = dat.SIGNED_SUMSTAT
             dat.drop('SIGNED_SUMSTAT', inplace=True, axis=1)
 
         out_fname = args.output + '.sumstats.gz'
@@ -777,6 +790,7 @@ def run_twas(args):
                     continue
 
                 # grab local reference genotype data
+                # import pdb; pdb.set_trace()
                 local_ref = ref.subset_by_pos(chrom, start=start, stop=stop)
                 if len(local_ref) == 0:
                     warn_str = "No reference LD SNPs found at {}:{} - {}:{}. Skipping"
@@ -813,6 +827,7 @@ def run_twas(args):
                     log.info(info_str.format(args.tissue, local_ref))
                     snp_weights = get_tissue_prioritized_genes(snp_weights, args.tissue, session,
                                                                metric="cv.R2", strict=args.strict_tissue)
+                    log.info("SNP weights retrieved.")
 
                 # fine-map, my dudes
                 result = pyfocus.fine_map(local_gwas, snp_weights, local_ref, intercept=args.intercept,
@@ -869,7 +884,9 @@ def get_tissue_prioritized_genes(snp_weights, tissue, session, metric="cv.R2", s
 
     # "ens_tx_id" is likely to be None which breaks this
     # just use gene-id for now until Tx models become fully incorporated
+    count = 0
     for data, model in snp_weights.groupby(["ens_gene_id", "tissue", "inference", "ref_name"]):
+        count += 1
         eid, mtissue, inference, ref_name = data
 
         local_mid = model.model_id.unique()[0]
@@ -894,6 +911,7 @@ def get_tissue_prioritized_genes(snp_weights, tissue, session, metric="cv.R2", s
             # we have a match on preferred tissue
             if re.match(".*" + tissue + ".*", tissue_type[eid], flags=re.IGNORECASE) or \
                     (strict and tissue == tissue_type[eid]):
+                # log.warning("(~901)About to check if metric_value > score[eid]")
                 if metric_value > score[eid]:
                     # current model is from the same tissue and has a better predictive value
                     keep[eid] = model
@@ -912,6 +930,10 @@ def get_tissue_prioritized_genes(snp_weights, tissue, session, metric="cv.R2", s
                 # stored model was from preferred tissue; skip
                 continue
 
+            # log.warning("(~920)About to check if metric_value > score[eid]")
+            # import pdb; pdb.set_trace()
+            if metric_value == None:
+                continue # Try to avoid a "can't do > between None types" error
             if metric_value > score[eid]:
                 # current model is not from non-preferred tissue, but is better than the previously stored
                 # non-preferred tissue model
@@ -920,6 +942,7 @@ def get_tissue_prioritized_genes(snp_weights, tissue, session, metric="cv.R2", s
                 tissue_type[eid] = mtissue
 
     snp_weights = pd.concat(keep.values())
+    # import pdb; pdb.set_trace()
 
     return snp_weights
 
